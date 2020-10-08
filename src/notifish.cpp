@@ -1,61 +1,67 @@
 #include <notifish.h>
 
-#include <vector>
 #include <sstream>
 #include <unordered_map>
 #include <iostream>
 #include <fstream>
+#include <algorithm>
 
-#include <rapidjson/rapidjson.h>
+#include <rapidjson/document.h>
 
 #ifdef NF_WINDOWS
+#define NOMINMAX
 #include <Windows.h>
 #include <shellapi.h>
 #include <ShlObj.h>
+#undef GetObject
 #endif
 
-static constexpr int MAX_TITLE_SIZE = 64;
-static constexpr int MAX_MESSAGE_SIZE = 255;
+static constexpr int MAX_TITLE_SIZE = 63;
+static constexpr int MAX_MESSAGE_SIZE = 254;
 
-#ifdef NF_WINDOWS
-void nf::notify_local(std::string_view title, std::string_view text)
+void nf::notify_local(NotifyInfo& ninfo)
 {
-    if ( title.size() >= MAX_TITLE_SIZE )
-    {
-        title = title.substr(0, MAX_TITLE_SIZE);
-    }
+#ifdef NF_WINDOWS
 
-    if ( text.size() >= MAX_MESSAGE_SIZE )
-    {
-        text = text.substr(0, MAX_MESSAGE_SIZE);
-    }
+    int title_len = std::min( MAX_TITLE_SIZE, (int)ninfo.title.size() );
+    int msg_len = std::min( MAX_MESSAGE_SIZE, (int)ninfo.message.size() );
 
     NOTIFYICONDATA data = { sizeof(data) };
 
     data.uFlags = NIF_GUID | NIF_INFO;
-    data.dwInfoFlags = NIIF_INFO;
 
-    strncpy_s( data.szInfoTitle, title.data(), title.size() );
-    strncpy_s( data.szInfo, text.data(), text.size() );
+    if (ninfo.return_code == 0)
+    {
+        data.dwInfoFlags = NIIF_INFO;
+    }
+    else
+    {
+        data.dwInfoFlags = NIIF_ERROR;
+    }
+
+    if (ninfo.is_silent)
+    {
+        data.dwInfoFlags = data.dwInfoFlags | NIIF_NOSOUND;
+    }
+
+    strncpy_s( data.szInfoTitle, ninfo.title.data(), title_len );
+    strncpy_s( data.szInfo, ninfo.message.data(), msg_len );
 
     BOOL result = Shell_NotifyIcon(NIM_ADD, &data);
     if (!result)
     {
         Shell_NotifyIcon(NIM_MODIFY, &data);
     }
-}
-#else
-void nf::notify( std::string_view title, std::string_view text)
-{
-    // TODO Linux notify_local
-}
+
+    Shell_NotifyIcon(NIM_DELETE, &data);
+
 #endif
+}
 
 int nf::start_daemon( int port )
 {
     return 0;
 }
-
 
 std::filesystem::path nf::get_config_path()
 {
@@ -93,13 +99,54 @@ void nf::ensure_config_file_exists()
     return;
 }
 
-void nf::get_config_file()
+std::unordered_map<std::string, std::string> nf::get_config_data()
 {
     ensure_config_file_exists();
 
+    std::unordered_map<std::string, std::string> data;
+    std::ifstream fstream( nf::get_config_path() );
 
+    std::stringstream buffer;
+    buffer << fstream.rdbuf();
+
+    rapidjson::Document doc;
+    doc.Parse( buffer.str().c_str() );
+
+    if (doc.HasParseError())
+    {
+
+    }
+    else if (!doc.HasMember("config"))
+    {
+
+    }
+
+    return std::move(data);
 }
 
+void nf::do_notify(nf::NotifyInfo &ninfo)
+{
+    if ( ninfo.is_local )
+    {
+        ninfo.return_code = system( ninfo.command.c_str() );
+
+        if (ninfo.return_code == 0)
+        {
+            ninfo.title = "Program completed";
+        }
+        else
+        {
+            ninfo.title = "Program failed";
+        }
+
+        ninfo.message = ninfo.command;
+        nf::notify_local( ninfo );
+    }
+    else
+    {
+
+    }
+}
 
 std::unordered_map<std::string, std::string> parse_command_line(int argc, char** argv)
 {
@@ -145,7 +192,7 @@ std::unordered_map<std::string, std::string> parse_command_line(int argc, char**
             }
             else
             {
-                out[std::string{current_arg}] = "";
+                out[std::string{current_arg}] = "true";
             }
         }
     }
@@ -163,15 +210,52 @@ std::unordered_map<std::string, std::string> parse_command_line(int argc, char**
  */
 int main( int argc, char** argv )
 {
-    auto args = parse_command_line(argc, argv);
+    auto cmd_args = parse_command_line(argc, argv);
+    auto config_args = nf::get_config_data();
 
-    if ( args.contains("daemon") )
+    config_args.merge( cmd_args );
+    auto args = std::move(config_args);
+
+    if ( args.contains("help")
+            || args.contains("h")
+            || args.empty()
+            || !args.contains("target_command")
+            || args["target_command"].empty() )
     {
-        // TODO
+        std::cout << "Help text here" << std::endl;
+        return 0;
+    }
+    else if ( args.contains("daemon") )
+    {
+
     }
     else
     {
-        auto path = nf::get_config_path();
-        int r = 5;
+        nf::NotifyInfo ninfo;
+
+        ninfo.command = args["target_command"];
+
+        if ( args.contains("server") )
+        {
+            ninfo.is_local = false;
+            ninfo.remote_server = args["server"];
+        }
+        else
+        {
+            ninfo.is_local = true;
+        }
+
+        if (args.contains("min-timeout"))
+        {
+            ninfo.notify_min_timeout_ms = std::stoi(args["min-timeout"]);
+        }
+
+        if (args.contains("silent"))
+        {
+            ninfo.is_silent = true;
+        }
+
+
+        nf::do_notify( ninfo );
     }
 }
