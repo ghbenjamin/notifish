@@ -14,6 +14,9 @@ add_executable(notifish ${CPP_SOURCE_LIST})
 find_package(ZeroMQ CONFIG REQUIRED)
 target_link_libraries(notifish PRIVATE libzmq libzmq-static)
 
+find_package(cppzmq CONFIG REQUIRED)
+target_link_libraries(notifish PRIVATE cppzmq cppzmq-static)
+
 find_package(RapidJSON CONFIG REQUIRED)
 target_include_directories(notifish PRIVATE ${RAPIDJSON_INCLUDE_DIRS})
 
